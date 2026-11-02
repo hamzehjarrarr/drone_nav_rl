@@ -120,6 +120,7 @@ class TorchDroneEnv:
         self.delay, self.push_step = long0(), long0() - 1
         self.soft = torch.zeros(n, dtype=torch.bool, device=self.device)
         self.realism, self.prev_dist, self.hold = z(n), z(n), z(n)
+        self.prev_clear = z(n) - 1.0  # clearance at the previous step (-1: just reset)
         self.prev_action, self.filtered_action = z(n, 4), z(n, 4)
         self.action_hist = z(n, 3, 4)
         self.wind_base, self.gust = z(n, 3), z(n, 3)
@@ -146,7 +147,7 @@ class TorchDroneEnv:
 
     @property
     def actor_obs_dim(self) -> int:
-        return 9 + 3 + 3 + 3 + 3 + 1 + 4 + 2 * self.n_rays
+        return 9 + 3 + 3 + 3 + 3 + 3 + 1 + 4 + 2 * self.n_rays
 
     @property
     def critic_obs_dim(self) -> int:
@@ -274,6 +275,7 @@ class TorchDroneEnv:
         put(self, "wp_idx", torch.zeros_like(self.wp_idx))
         put(self, "prev_dist", (wps[:, 0] - s.pos).norm(dim=1))
         put(self, "hold", torch.zeros_like(self.hold))
+        put(self, "prev_clear", torch.full_like(self.prev_clear, -1.0))
         put(self, "t", torch.zeros_like(self.t))
         pts = torch.cat([world["start"][:, None], world["wps"]], 1)
         seg = (pts[:, 1:] - pts[:, :-1]).norm(dim=-1)
@@ -384,7 +386,9 @@ class TorchDroneEnv:
 
         near = is_final & (dist < cfg.final_radius) & (speed < cfg.final_max_speed)
         self.hold = torch.where(near, self.hold + cfg.policy_dt, 0.0)
-        r = r + w.hover_shaping * is_final * torch.exp(-(dist**2) / 0.5) * torch.exp(-(speed**2))
+        slow = torch.exp(-(speed**2))
+        r = r + w.hover_shaping * is_final * torch.exp(-(dist**2) / 0.5) * slow
+        r = r + w.hover_precision * is_final * torch.exp(-(dist**2) / 0.05) * slow
         success = self.hold >= cfg.hold_time
         r = r + w.success_bonus * success
 
@@ -401,6 +405,14 @@ class TorchDroneEnv:
         flipped = s.rot[:, 2, 2] < 0.0
         r = r - w.collision * collided * torch.where(self.soft, 0.1, 1.0)
         self.ep_collisions = self.ep_collisions + collided
+
+        # speed safety: closing speed towards the nearest surface vs. what can still be braked
+        closing = torch.where(self.prev_clear >= 0, (self.prev_clear - d_obs) / cfg.policy_dt, 0.0)
+        self.prev_clear = d_obs
+        v_safe = torch.sqrt(2.0 * w.brake_accel * torch.clamp(d_obs, min=0.0))
+        r = r - w.speed_safety * torch.clamp(closing - v_safe, min=0.0) ** 2
+        r = r - w.over_speed * torch.clamp(speed - w.cruise_cap, min=0.0) ** 2
+        r = r - w.attitude * torch.clamp(0.5 - s.rot[:, 2, 2], min=0.0)
 
         v_h = s.vel[:, :2]
         speed_h = v_h.norm(dim=1)
@@ -452,8 +464,11 @@ class TorchDroneEnv:
         wp2 = wps[ar, torch.minimum(wp_idx + 1, n_wp - 1)]
         is_final = (wp_idx == n_wp - 1).to(self.dtype)
 
+        def body_vec(pt):
+            return torch.einsum("nji,nj->ni", rot, pt - est_pos)
+
         def body_rel(pt):
-            d = torch.einsum("nji,nj->ni", rot, pt - est_pos)
+            d = body_vec(pt)
             return d / torch.clamp(d.norm(dim=1, keepdim=True), min=10.0)
 
         cyl, cm, box, bm = g(wd["cyl"]), g(wd["cyl_mask"]), g(wd["box"]), g(wd["box_mask"])
@@ -466,6 +481,7 @@ class TorchDroneEnv:
                 gyro / 5.0,
                 body_rel(wp1),
                 body_rel(wp2),
+                torch.clamp(body_vec(wp1), -2.0, 2.0) / 2.0,  # fine resolution near the target
                 is_final[:, None],
                 g(self.prev_action),
                 prox,

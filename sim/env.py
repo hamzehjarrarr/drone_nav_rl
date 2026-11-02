@@ -38,9 +38,17 @@ class RewardConfig:
     waypoint_bonus: float = 2.0
     success_bonus: float = 10.0
     hover_shaping: float = 0.05  # per step, near the final waypoint at low speed
+    hover_precision: float = 0.1  # per step, sharp bonus within ~0.3 m of the final waypoint
     clearance: float = 0.4  # per step at the worst clearance
     clearance_margin: float = 1.0  # m, from the drone's collision radius
     collision: float = 20.0
+    # flying at obstacles faster than the drone could brake in time: the safe closing speed
+    # at clearance d is sqrt(2 * brake_accel * d); the excess is penalized (squared)
+    speed_safety: float = 0.05
+    brake_accel: float = 4.0  # m/s^2, well inside what the drone can do, leaves reaction time
+    over_speed: float = 0.02  # * (speed - cruise_cap)^2 above the cap
+    cruise_cap: float = 5.0  # m/s
+    attitude: float = 1.0  # * (cos 60 deg - cos tilt) when tilted past 60 deg
     heading: float = 0.02  # per step, for pointing the nose (and front sensor) where it flies
     smoothness: float = 0.02  # * |a_t - a_{t-1}|^2
     body_rate: float = 0.0005  # * |omega|^2
@@ -130,6 +138,7 @@ class VecDroneEnv:
         self.realism = np.zeros(n)
         self.wp_idx = np.zeros(n, int)
         self.prev_dist = np.zeros(n)
+        self.prev_clear = np.full(n, -1.0)  # clearance at the previous step (-1: just reset)
         self.hold = np.zeros(n)
         self.t = np.zeros(n, int)
         self.max_steps = np.ones(n, int)
@@ -151,7 +160,7 @@ class VecDroneEnv:
     # ------------------------------------------------------------------ dims
     @property
     def actor_obs_dim(self) -> int:
-        return 9 + 3 + 3 + 3 + 3 + 1 + 4 + 2 * self.n_rays
+        return 9 + 3 + 3 + 3 + 3 + 3 + 1 + 4 + 2 * self.n_rays
 
     @property
     def critic_obs_dim(self) -> int:
@@ -228,6 +237,7 @@ class VecDroneEnv:
         self.wp_idx[idx] = 0
         first = self.world.waypoints[idx, 0]
         self.prev_dist[idx] = np.linalg.norm(first - self.state.pos[idx], axis=1)
+        self.prev_clear[idx] = -1.0
         self.hold[idx] = 0.0
         self.t[idx] = 0
         self.max_steps[idx] = [self._time_budget(i) for i in idx]
@@ -362,7 +372,9 @@ class VecDroneEnv:
         # final hover
         near = is_final & (dist < cfg.final_radius) & (speed < cfg.final_max_speed)
         self.hold = np.where(near, self.hold + cfg.policy_dt, 0.0)
-        r += w.hover_shaping * is_final * np.exp(-(dist**2) / 0.5) * np.exp(-(speed**2))
+        slow = np.exp(-(speed**2))
+        r += w.hover_shaping * is_final * np.exp(-(dist**2) / 0.5) * slow
+        r += w.hover_precision * is_final * np.exp(-(dist**2) / 0.05) * slow
         success = self.hold >= cfg.hold_time
         r += w.success_bonus * success
 
@@ -381,6 +393,14 @@ class VecDroneEnv:
         flipped = s.rot[:, 2, 2] < 0.0
         r -= w.collision * collided * np.where(self.soft, 0.1, 1.0)
         self.ep_collisions += collided
+
+        # speed safety: closing speed towards the nearest surface vs. what can still be braked
+        closing = np.where(self.prev_clear >= 0, (self.prev_clear - d_obs) / cfg.policy_dt, 0.0)
+        self.prev_clear = d_obs
+        v_safe = np.sqrt(2.0 * w.brake_accel * np.maximum(d_obs, 0.0))
+        r -= w.speed_safety * np.maximum(closing - v_safe, 0.0) ** 2
+        r -= w.over_speed * np.maximum(speed - w.cruise_cap, 0.0) ** 2
+        r -= w.attitude * np.maximum(0.5 - s.rot[:, 2, 2], 0.0)
 
         # face the direction of travel: the front sectors are the fine ones (and the only
         # ones the realistic depth camera has), so looking ahead is what makes avoidance work
@@ -431,8 +451,11 @@ class VecDroneEnv:
         wp2 = self.world.waypoints[ar, np.minimum(self.wp_idx + 1, n_wp - 1)]
         is_final = (self.wp_idx == n_wp - 1).astype(float)
 
+        def body_vec(p: np.ndarray) -> np.ndarray:
+            return np.einsum("nij,nj->ni", rot_t, p - est_pos)
+
         def body_rel(p: np.ndarray) -> np.ndarray:
-            d = np.einsum("nij,nj->ni", rot_t, p - est_pos)
+            d = body_vec(p)
             norm = np.linalg.norm(d, axis=1, keepdims=True)
             return d / np.maximum(norm, 10.0)  # unit-ish beyond 10 m, linear inside
 
@@ -445,6 +468,7 @@ class VecDroneEnv:
                 gyro / 5.0,
                 body_rel(wp1),
                 body_rel(wp2),
+                np.clip(body_vec(wp1), -2.0, 2.0) / 2.0,  # fine resolution near the target
                 is_final[:, None],
                 self.prev_action,
                 prox,

@@ -1,0 +1,4 @@
+certifi>=2026.10.19
+streamlit>=1.50
+numpy>=1.26
+pandas>=2.0

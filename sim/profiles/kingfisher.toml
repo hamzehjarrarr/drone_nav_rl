@@ -1,0 +1,51 @@
+# Drone profile: Agilicious "Kingfisher" agile quadrotor (the reference platform).
+#
+# Sources: Agilicious parameter files (agiros/parameters/quads/kingfisher.yaml and
+# agilib/params/quads/sim_kingfisher.yaml) and the Agilicious paper (Foehn et al., 2022).
+# The rotor-drag coefficients are the values listed (commented out) in kingfisher.yaml.
+#
+# To train for another drone, copy this file, fill in that drone's measured values and
+# run:  python -m rl.train --profile path/to/your_drone.toml
+# Frames: body x forward, y left, z up. Rotor order: front-right, back-left, back-right,
+# front-left. Rotors 0 and 1 spin one way, rotors 2 and 3 the other.
+
+name = "Agilicious Kingfisher"
+
+[body]
+mass = 0.752                       # kg
+inertia = [0.0025, 0.0021, 0.0043] # kg m^2, diagonal
+collision_radius = 0.18            # m, rotor tip span used for collision checks
+
+[rotors]
+positions_xy = [[0.075, -0.10], [-0.075, 0.10], [-0.075, -0.10], [0.075, 0.10]]  # m
+spin_sign = [1.0, 1.0, -1.0, -1.0]
+radius = 0.0648                    # m, propeller radius (for ground effect)
+
+[motors]
+thrust_coeff = 1.562522e-6         # N / (rad/s)^2
+kappa = 0.022                      # Nm / N, rotor drag torque per unit thrust (yaw)
+time_constant = 0.033              # s, first-order motor response
+omega_min = 150.0                  # rad/s
+omega_max = 2800.0                 # rad/s
+thrust_min = 0.0                   # N per motor
+thrust_max = 8.5                   # N per motor
+
+[control]
+body_rate_max = [10.0, 10.0, 4.0]  # rad/s, roll / pitch / yaw rates the policy may command
+
+[aero]
+frontal_area = [1.5e-2, 1.5e-2, 3.0e-2]  # m^2, body x / y / z
+drag_coeff = [1.04, 1.04]                # quadratic body drag, horizontal / vertical
+rotor_drag = [0.26, 0.28, 0.42]          # N per (m/s), linear rotor drag per body axis
+ground_effect = true
+
+[randomization]                    # +- fraction around the nominal values (later stages)
+mass = 0.10
+inertia = 0.15
+thrust_coeff = 0.10
+kappa = 0.10
+motor_tau = 0.20
+drag = 0.30
+rotor_drag = 0.30
+per_motor_thrust = 0.05
+ground_effect = 0.50

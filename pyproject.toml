@@ -1,0 +1,18 @@
+[project]
+name = "drone-nav-rl"
+version = "0.1.0"
+description = "Autonomous quadrotor navigation with reinforcement learning: waypoints, obstacle avoidance and hover."
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"app/viz.py" = ["E501"]  # the embedded JavaScript viewer template

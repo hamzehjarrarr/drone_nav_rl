@@ -68,8 +68,9 @@ def main(argv: list[str] | None = None) -> Path:
     ap.add_argument(
         "--window",
         type=int,
-        default=400,
-        help="episodes of the current stage used to judge advancement",
+        default=None,
+        help="episodes of the current stage used to judge advancement (default: 400, or a "
+        "quarter of --n-envs if larger, so a lucky streak cannot advance the stage)",
     )
     ap.add_argument(
         "--device",
@@ -102,6 +103,8 @@ def main(argv: list[str] | None = None) -> Path:
         args.minibatches = 8 if gpu_sim else 4
     if args.device is None:
         args.device = "auto" if gpu_sim else "cpu"
+    if args.window is None:
+        args.window = max(400, args.n_envs // 4)
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)

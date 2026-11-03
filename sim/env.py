@@ -186,6 +186,7 @@ class VecDroneEnv:
         idx: np.ndarray,
         worlds: list[World] | None = None,
         stage_ids: np.ndarray | None = None,
+        realism: np.ndarray | float | None = None,
     ) -> None:
         if len(idx) == 0:
             return
@@ -206,7 +207,10 @@ class VecDroneEnv:
         self.rc.gain_scale[idx] = np.where(rand, self.rng.uniform(0.8, 1.2, k), 1.0)
         self.rc.reset(self.n, idx)
 
-        realism = np.array([s.realism for s in stages])
+        if realism is None:  # each episode is realistic with the stage's probability
+            share = np.array([s.realism for s in stages])
+            realism = (self.rng.random(k) < share).astype(float)
+        realism = np.broadcast_to(np.asarray(realism, float), (k,))
         self.realism[idx] = realism
         self.soft[idx] = [s.soft_collisions for s in stages]
 
@@ -269,12 +273,16 @@ class VecDroneEnv:
         return int(seconds / self.cfg.policy_dt)
 
     def load_worlds(
-        self, worlds: list[World], stage_ids: np.ndarray | None = None
+        self,
+        worlds: list[World],
+        stage_ids: np.ndarray | None = None,
+        realism: np.ndarray | float | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Reset every env onto given worlds (evaluation and the app)."""
+        """Reset every env onto given worlds (evaluation and the app). Pass realism (0 or 1)
+        to fix the sensing mode instead of drawing it from the stage."""
         assert len(worlds) == self.n
         sid = np.full(self.n, self.stage) if stage_ids is None else stage_ids
-        self._reset_idx(np.arange(self.n), worlds=worlds, stage_ids=sid)
+        self._reset_idx(np.arange(self.n), worlds=worlds, stage_ids=sid, realism=realism)
         return self._observe()
 
     def schedule_push(self, step: int, force: np.ndarray) -> None:

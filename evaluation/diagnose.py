@@ -2,6 +2,7 @@
 break every failure down by cause, with what the drone was doing just before.
 
     python -m evaluation.diagnose --policy app/weights/policy.npz --stage sparse_obstacles
+    python -m evaluation.diagnose --stage realism --realistic
 
 Prints plain text only; nothing is written to disk.
 """
@@ -42,6 +43,7 @@ def main() -> None:
     ap.add_argument("--stage", default="sparse_obstacles")
     ap.add_argument("--episodes", type=int, default=200)
     ap.add_argument("--seed", type=int, default=777)
+    ap.add_argument("--realistic", action="store_true", help="depth camera, drift, latency")
     args = ap.parse_args()
 
     policy = NumpyPolicy(args.policy)
@@ -51,7 +53,8 @@ def main() -> None:
     worlds = [pool._make(STAGES[sid]) for _ in range(n)]
     env = VecDroneEnv(EnvConfig(n_envs=n, world_pool_size=1, profile=policy.profile),
                       seed=args.seed, stage=sid)  # fmt: skip
-    obs, _ = env.load_worlds(worlds, stage_ids=np.full(n, sid))
+    realism = 1.0 if args.realistic else 0.0
+    obs, _ = env.load_worlds(worlds, stage_ids=np.full(n, sid), realism=realism)
     n_rays = env.n_rays
     n_az = env.cfg.rays.n_azimuth
     front = np.zeros(n_rays, bool)  # the 8 fine front bins, all bands
@@ -65,7 +68,8 @@ def main() -> None:
     max_steps = int(env.max_steps.max()) + 2
     for t in range(max_steps):
         prox = obs[:, -2 * n_rays : -n_rays]
-        seen = (1.0 - prox) * env.cfg.rays.max_range
+        rng_max = env.cfg.rays.real_max_range if args.realistic else env.cfg.rays.max_range
+        seen = (1.0 - prox) * rng_max
         hist.append(
             np.stack(
                 [
@@ -97,7 +101,8 @@ def main() -> None:
             break
 
     counts = Counter(cause)
-    print(f"{args.stage}: {n} episodes, noise-free policy, fresh worlds")
+    mode = "realistic" if args.realistic else "ideal"
+    print(f"{args.stage} ({mode} sensing): {n} episodes, noise-free policy, fresh worlds")
     for k in ("success", "hit obstacle", "ground", "flipped", "ceiling", "left arena", "timeout"):
         print(f"  {k:<13} {counts.get(k, 0) / n:6.1%}")
 

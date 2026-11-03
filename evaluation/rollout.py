@@ -67,7 +67,9 @@ def fly(worlds: list[World], pilot: Pilot, opt: RunOptions | None = None) -> lis
     n = len(worlds)
     env = make_env(n, opt.seed, opt.profile)
     stage = stage_index("realism" if opt.realistic else "dense_obstacles")
-    obs_a, _ = env.load_worlds(worlds, stage_ids=np.full(n, stage))
+    obs_a, _ = env.load_worlds(
+        worlds, stage_ids=np.full(n, stage), realism=1.0 if opt.realistic else 0.0
+    )
 
     # scenario conditions override whatever the stage sampled
     rng = np.random.default_rng(opt.seed + 12345)

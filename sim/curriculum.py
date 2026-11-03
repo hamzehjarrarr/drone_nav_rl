@@ -3,6 +3,12 @@
 Obstacle density rises in three steps (sparse, medium, dense). Collisions always end
 the episode: an earlier version let the drone bump through obstacles in the sparse
 stage, so it reached the dense stage without ever having learned to avoid anything.
+
+Realistic sensing (forward depth camera, drifting estimate, latency, battery sag) is mixed
+in from the first stage as a share of episodes, rising towards the end. An earlier version
+switched it on all at once in the last stage: inputs the policy had only ever seen at one
+constant value (the camera mask, the realism flag) suddenly changed, the observation
+normalizer turned them into extreme values, and the policy froze in place.
 """
 
 from __future__ import annotations
@@ -24,7 +30,7 @@ class Stage:
     randomize_dynamics: bool = False
     wind_max: float = 0.0  # m/s, steady wind
     gust_std: float = 0.0  # m/s, gust strength
-    realism: float = 0.0  # 0 ideal sensing/estimation, 1 realistic
+    realism: float = 0.1  # share of episodes with realistic sensing and state estimation
     advance_success: float = 0.8  # success rate needed to move to the next stage
 
 
@@ -35,14 +41,23 @@ STAGES: tuple[Stage, ...] = (
     Stage("single_waypoint", waypoints=(1, 1), random_init=True),
     Stage("routes_open", waypoints=(2, 5)),
     Stage("sparse_obstacles", waypoints=(2, 5), trees=10, walls=1, advance_success=0.75),
-    Stage("medium_obstacles", waypoints=(2, 5), trees=18, walls=2, blocks=1, advance_success=0.7),
-    Stage("dense_obstacles", **_DENSE, advance_success=0.65),
+    Stage(
+        "medium_obstacles",
+        waypoints=(2, 5),
+        trees=18,
+        walls=2,
+        blocks=1,
+        realism=0.15,
+        advance_success=0.7,
+    ),
+    Stage("dense_obstacles", **_DENSE, realism=0.2, advance_success=0.65),
     Stage(
         "domain_randomization",
         **_DENSE,
         randomize_dynamics=True,
         wind_max=3.0,
         gust_std=1.0,
+        realism=0.5,
         advance_success=0.6,
     ),
     Stage(

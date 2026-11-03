@@ -94,8 +94,8 @@ def test_full_environment_matches(stage):
     cfg = EnvConfig(n_envs=n, world_pool_size=2)
     ref = VecDroneEnv(cfg, seed=0, stage=sid)
     gpu = TorchDroneEnv(cfg, seed=0, stage=sid, device="cpu", dtype=F64, pool_size=4)
-    oa_n, oc_n = ref.load_worlds(worlds, stage_ids=np.full(n, sid))
-    oa_t, oc_t = gpu.load_worlds(worlds, stage_ids=np.full(n, sid))
+    oa_n, oc_n = ref.load_worlds(worlds, stage_ids=np.full(n, sid), realism=0.0)
+    oa_t, oc_t = gpu.load_worlds(worlds, stage_ids=np.full(n, sid), realism=0.0)
     np.testing.assert_allclose(oc_t.numpy(), oc_n, atol=1e-5)
 
     rng = np.random.default_rng(2)
@@ -126,3 +126,19 @@ def test_gpu_env_trains_one_update():
     stats = agent.update(batch)
     assert all(np.isfinite(v) for v in stats.values())
     assert all(isinstance(e["success"], bool) for e in finished)
+
+
+def test_realistic_episodes_are_mixed_in_by_stage_share():
+    """Realistic sensing appears in every stage (so the policy never meets new inputs late)."""
+    from sim.curriculum import STAGES
+
+    for sid, stage in enumerate(STAGES):
+        for env in (
+            VecDroneEnv(EnvConfig(n_envs=2000, world_pool_size=2), seed=1, stage=sid),
+            TorchDroneEnv(EnvConfig(n_envs=2000), seed=1, stage=sid, pool_size=2),
+        ):
+            env_realism = np.asarray(env.realism)
+            own = np.asarray(env.stage_id) == sid
+            share = env_realism[own].mean()
+            assert set(np.unique(env_realism)) <= {0.0, 1.0}
+            assert abs(share - stage.realism) < 0.05, (stage.name, share)

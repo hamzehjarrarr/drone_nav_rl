@@ -187,8 +187,9 @@ class TorchDroneEnv:
         self._reset(torch.ones(self.n, dtype=torch.bool, device=self.device))
         return self._observe()
 
-    def load_worlds(self, worlds: list[World], stage_ids: np.ndarray | None = None):
-        """Reset every env onto given worlds (tests and evaluation)."""
+    def load_worlds(self, worlds: list[World], stage_ids: np.ndarray | None = None, realism=None):
+        """Reset every env onto given worlds (tests and evaluation). Pass realism (0 or 1)
+        to fix the sensing mode instead of drawing it from the stage."""
         assert len(worlds) == self.n
         arr = _worlds_to_arrays(worlds)
         w = {k: torch.as_tensor(v, device=self.device).to(self.pool[k].dtype)
@@ -198,10 +199,13 @@ class TorchDroneEnv:
             torch.ones(self.n, dtype=torch.bool, device=self.device),
             world=w,
             stage_ids=torch.as_tensor(sid, device=self.device),
+            realism=None if realism is None else np.asarray(realism, float),
         )
         return self._observe()
 
-    def _reset(self, m: torch.Tensor, world: dict | None = None, stage_ids=None) -> None:
+    def _reset(
+        self, m: torch.Tensor, world: dict | None = None, stage_ids=None, realism=None
+    ) -> None:
         """Reset the environments where mask m is True (all others are left unchanged)."""
         n, cfg, nom = self.n, self.cfg, self.nom
 
@@ -243,7 +247,10 @@ class TorchDroneEnv:
         put(self.rc, "gain_scale", torch.where(rand, self._scale(0.2, n), 1.0))
         put(self.rc, "integral", torch.zeros_like(self.rc.integral))
 
-        realism = self.st_realism[sid]
+        if realism is None:  # each episode is realistic with the stage's probability
+            realism = (self._rand(n) < self.st_realism[sid]).to(self.dtype)
+        else:
+            realism = torch.as_tensor(realism, dtype=self.dtype, device=self.device).expand(n)
         put(self, "realism", realism)
         put(self, "soft", self.st_soft[sid])
 

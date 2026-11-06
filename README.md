@@ -3,11 +3,11 @@
 A reinforcement-learning pilot for a simulated quadrotor. Give it a list of waypoints and it
 flies them in order, avoids obstacles it has never seen before, and stops to hover at the last
 one. Physics and sensing are modelled on a real agile quadrotor and depth camera, and the
-trained policy runs live in a Streamlit demo with a 3D flight viewer.
+trained policy runs in a Streamlit demo with a 3D flight viewer.
 
-**Live demo:** _add your Streamlit Cloud link here_
-
-<!-- Add the hero GIF recorded from the app's 3D viewer here:  ![demo](docs/demo.gif) -->
+With realistic sensing (a forward depth camera, a drifting position estimate, latency) it
+completes 98–100% of test routes in forests of every density without a single collision; a
+classical straight-line pilot that is even given the true position completes 8–46%.
 
 ## What it does
 
@@ -22,11 +22,11 @@ trained policy runs live in a Streamlit demo with a 3D flight viewer.
 | Part | Choice | Why |
 | --- | --- | --- |
 | Algorithm | PPO with an **asymmetric actor-critic** | The actor sees onboard sensing only; the critic also sees privileged ground truth during training, which stabilizes learning under partial observability |
-| Actions | **Collective thrust + body rates** at 50 Hz | Benchmarked as the most robust and agile action space for learned quadrotor control |
+| Actions | **Collective thrust + body rates** at 50 Hz | Found in a benchmark of learned quadrotor control to give the best trade-off of agility and robustness to model errors |
 | Inner loop | Simulated firmware rate controller at 250 Hz | Mirrors how real flight controllers accept thrust and body-rate commands |
 | Senses | Attitude, velocity, next two waypoints, previous action, and a 64-sector range scan (fine in front, coarse behind); in realistic mode only the front sectors a depth camera would see | No map: avoidance is purely reactive |
 | Network | MLP, 2 × 256, ELU | Small enough to run with NumPy in the app |
-| Training | 8-stage automatic curriculum: hover → single waypoint → routes → sparse → medium → dense obstacles → domain randomization → sim-to-real realism | Each stage starts once the previous one reaches its success threshold |
+| Training | 8-stage automatic curriculum: hover → single waypoint → routes → sparse → medium → dense obstacles → domain randomization → sim-to-real realism | Each stage starts once the previous one reaches its success threshold; 20% of episodes replay earlier stages so skills are not forgotten |
 
 **Simulator.** A vectorized NumPy simulator written for this project: 6-DoF rigid body,
 first-order motors, quadratic body drag, linear rotor drag (the dominant aerodynamic force at
@@ -55,22 +55,61 @@ stored in checkpoints and exported policies, so evaluation and the app use the s
 realistic sensor model follows the RealSense D435 depth camera (about 85° × 58° field of view,
 about 0.3–3 m operating range).
 
-**Sim-to-real realism (final training stage).** The actor gets a drifting, noisy position
-estimate instead of the true state; sees only through a forward-facing depth camera with
-distance-dependent noise and dropouts; flies with randomized mass, inertia, motors, body and
-rotor drag, ground effect and rate-controller gains; suffers 0–40 ms actuation latency and
-battery sag; and copes with wind.
+**Rewards.** Progress towards the active waypoint, bonuses for waypoints and for holding the
+final hover, and penalties for collisions, closeness to obstacles, jerky commands and time.
+Two safety terms matter most: the drone is penalized for closing in on any surface faster
+than it could still brake (safe speed √(2·a·d) at distance d, with a = 4 m/s²) and for
+tilting past 60°. Without them it learned to dash at 7–9 m/s in open stages and could no
+longer dodge trees later; with them it cruises at about 4 m/s and slows down near obstacles.
+
+**Sim-to-real realism.** In realistic mode the actor gets a drifting, noisy position estimate
+instead of the true state (like visual-inertial odometry); sees only through a forward-facing
+depth camera with distance-dependent noise and dropouts; suffers 0–40 ms actuation latency and
+battery sag; and, in the last two stages, also flies with randomized mass, inertia, motors,
+body and rotor drag, ground effect and rate-controller gains, in wind. Realistic episodes are
+mixed in from the first stage (10%) and rise to 100% in the final stage. An earlier version
+switched them on all at once at the end: inputs the policy had only ever seen at one constant
+value (the camera mask) suddenly changed, the observation normalizer turned them into extreme
+values, and the policy froze in place.
 The policy is trained and evaluated under these models; it has **not** been flown on hardware.
 
 ## Results
 
-_Fill in after training (see "Evaluate" below)._
+Trained for 600M environment steps with the GPU simulator (8192 drones in parallel), which
+took about 1.5 hours on a free Kaggle T4 GPU. Evaluated on 8 fixed test scenarios that are
+never used in training, 50 flights each. Success = every waypoint passed and a 2 s hover held
+at the last one; collisions end the flight.
 
-- Learning curve: `docs/learning_curve.png`
-- Success, collision rate, speed and hover accuracy per scenario, ideal vs. realistic mode: `docs/results/results.md`
+| Scenario | PPO, realistic sensing | PPO, ideal sensing | Classical pilot (true state) |
+| --- | --- | --- | --- |
+| Open field | **100%** (0% crashes) | 100% (0%) | 100% (0%) |
+| Forest, 12 trees | **100%** (0%) | 98% (0%) | 44% (56%) |
+| Forest, 24 trees | **100%** (0%) | 88% (4%) | 34% (66%) |
+| Forest, 36 trees | **98%** (0%) | 64% (10%) | 12% (88%) |
+| Walls with gaps | **74%** (14%) | 72% (22%) | 18% (82%) |
+| Corridor | **98%** (2%) | 0% (100%) | 60% (38%) |
+| Forest in 3 m/s wind + gusts | **98%** (2%) | 78% (6%) | 22% (76%) |
+| Push mid-flight | **100%** (0%) | 100% (0%) | 100% (0%) |
 
-The classical reference pilot (straight lines, no avoidance, given the true state) is included
-as a sanity check: it flies open routes reliably and crashes in clutter.
+The policy averages about 4 m/s. The classical pilot (a straight-line PID pilot set to
+cruise at 3 m/s, about 2.2 m/s on average) has no obstacle avoidance, so it is a sanity
+check, not a tuned competitor.
+
+How to read the realistic column: the drone can only know where it *thinks* it is. Success is
+judged by its onboard position estimate, which drifts during a flight as on a real drone, and
+no policy can see that drift. Judged on the true position, it ends on average about 0.3 m from
+the final waypoint (the *Final error* column in the full results).
+
+![Learning curve](docs/learning_curve.png)
+
+The curve is the *training* metric: success of the current stage, judged on the true position
+and with exploration noise on. The final stage levels off at about 60% because most remaining
+flights hold the final hover where their drifted estimate says the target is, but end more
+than 0.3 m from it. That is why the realistic column above, judged by the onboard estimate and
+flown without noise, is higher.
+
+Full per-scenario metrics (speed, route efficiency, final error, minimum clearance) for both
+modes and both pilots: [`docs/results/results.md`](docs/results/results.md).
 
 ## Quickstart
 
@@ -81,7 +120,7 @@ python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip --version                      # must be 26.2.2 or newer, see the note below
 pip install -r requirements-train.txt
-pytest                              # 43 tests, about a minute
+pytest                              # 48 tests, a minute or two
 ```
 
 > **Security note (October 2026).** After the eMudhra/emSign certificate-authority
@@ -99,9 +138,10 @@ pytest                              # 43 tests, about a minute
 python -m rl.benchmark --devices cpu,mps
 ```
 
-Prints simulator steps per second for several batch sizes, and how long a PPO update takes on
-CPU vs. the Apple GPU (MPS). The simulator runs on the CPU either way; use whichever device
-gives the faster update.
+Prints steps per second of the NumPy simulator for several batch sizes, and how long a PPO
+update takes on the CPU vs. the Apple GPU (MPS); use whichever device gives the faster update.
+On a laptop CPU the NumPy simulator trains at roughly 25,000 steps per second. To run the
+simulator itself on a GPU, see 2b.
 
 ### 2. Train
 
@@ -150,13 +190,15 @@ accelerator (recent PyTorch builds may not support the older P100) and turn on
 internet, then run
 
 ```bash
-!git clone https://github.com/<you>/drone_nav_rl.git
+!git clone https://github.com/hamzehjarrarr/drone_nav_rl.git
 %cd drone_nav_rl
 !python -m simgpu.benchmark
-!python -m rl.train --sim torch --run-name kaggle --total-steps 300e6
+!python -u -m rl.train --sim torch --n-envs 8192 --rollout-steps 16 --run-name kaggle --total-steps 600e6
 ```
 
-Kaggle images already include PyTorch, NumPy and Matplotlib, so nothing needs installing.
+This is the setup of the published policy: on a T4, 8192 drones train at about 125,000 steps
+per second. Kaggle images already include PyTorch, NumPy and Matplotlib, so nothing needs
+installing.
 Use "Save Version → Save & Run All" to train in the background; `runs/` ends up in the
 notebook's output. To continue in a new session, add that output as an input and pass
 `--resume /kaggle/input/<output>/drone_nav_rl/runs/kaggle/checkpoints/latest.pt`.
@@ -216,6 +258,13 @@ docs/         figures and results for this README
   a safety layer.
 - Aerodynamics are simplified: body and rotor drag, wind and ground effect are modelled;
   thrust changing with airspeed, downwash and aerodynamic torques are not.
+- In realistic mode the drone navigates on a drifting position estimate, so it ends about
+  0.3 m from the final waypoint on average; holding a precise spot would need an external
+  reference (a landmark, GPS or motion capture).
+- With *ideal* sensing the policy fails the narrow corridor scenario: its last training stage
+  was all camera-only flights, and it lost that skill for full 360° sensing. With the
+  realistic camera, the deployment-relevant mode, it flies the corridor 98% of the time.
+- Finding the opening in a wall with a camera that sees 3 m ahead is the weakest case (74%).
 - The camera tilt model is first-order (it shifts each sector's elevation bands; it does not
   distort azimuths when the drone rolls).
 - Obstacles are static primitives (cylinders and boxes); no moving obstacles.

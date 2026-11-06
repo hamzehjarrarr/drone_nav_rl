@@ -22,29 +22,50 @@ from sim.world import ARENA_HALF  # noqa: E402
 
 
 def learning_curve(csv_path: str | Path, out: str | Path) -> Path:
+    """Success rate of the current curriculum stage over training, one shaded band per stage.
+
+    This is the training metric: judged on the true position, with exploration noise on.
+    """
+    from sim.curriculum import STAGES
+
     rows = list(csv.DictReader(Path(csv_path).open()))
     steps = np.array([float(r["step"]) for r in rows]) / 1e6
     succ = np.array([float(r["success_rate"]) for r in rows])
     stages = [r["stage"] for r in rows]
+    order = [s.name for s in STAGES]
 
-    fig, ax = plt.subplots(figsize=(8, 3.6), dpi=150)
-    ax.plot(steps, succ, color="#2563eb", lw=1.6)
-    for i in range(1, len(stages)):
-        if stages[i] != stages[i - 1]:
-            ax.axvline(steps[i], color="#9ca3af", lw=0.8, ls="--")
-            ax.text(
-                steps[i],
-                1.02,
-                stages[i].replace("_", " "),
-                rotation=30,
-                fontsize=7,
-                color="#4b5563",
-                ha="left",
-                va="bottom",
-            )
+    # contiguous spans of each stage
+    spans, start = [], 0
+    for i in range(1, len(stages) + 1):
+        if i == len(stages) or stages[i] != stages[start]:
+            spans.append((stages[start], steps[start], steps[i - 1]))
+            start = i
+
+    fig, ax = plt.subplots(figsize=(8, 3.8), dpi=150)
+    for k, (name, lo, hi) in enumerate(spans):
+        if k % 2 == 1 and k < len(spans) - 1:  # alternate bands; the long final stage stays plain
+            ax.axvspan(lo, hi, color="#e5e7eb", alpha=0.6, lw=0)
+        idx = order.index(name) if name in order else k
+        ax.text((lo + hi) / 2, 1.02, str(idx), ha="center", va="bottom", fontsize=7,
+                color="#4b5563", transform=ax.get_xaxis_transform())  # fmt: skip
+    ax.plot(steps, succ, color="#2563eb", lw=1.4)
+
+    seen = [n for n, _, _ in spans]
+    key = "\n".join(f"{order.index(n)}  {n.replace('_', ' ')}" for n in dict.fromkeys(seen))
+    ax.text(0.985, 0.04, "Curriculum stage\n" + key, transform=ax.transAxes, ha="right",
+            va="bottom", fontsize=6.5, color="#374151", linespacing=1.35, multialignment="left",
+            bbox=dict(boxstyle="round,pad=0.4", fc="white", ec="#d1d5db"))  # fmt: skip
+
     ax.set_xlabel("Environment steps (millions)")
-    ax.set_ylabel("Success rate (current stage)")
+    ax.set_ylabel("Success rate, current stage")
+    ax.set_title(
+        "Training success (true position, with exploration noise)",
+        fontsize=9,
+        color="#374151",
+        pad=14,
+    )
     ax.set_ylim(0, 1.0)
+    ax.set_xlim(0, steps.max() * 1.01)
     ax.grid(alpha=0.25)
     for side in ("top", "right"):
         ax.spines[side].set_visible(False)

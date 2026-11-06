@@ -38,3 +38,16 @@ def test_streamlit_app_runs():
     labels = [m.label for m in at.metric]
     assert "Result" in labels and "Average speed" in labels
     np.testing.assert_equal(len(at.button) >= 2, True)
+
+
+def test_success_by_onboard_estimate():
+    """Ideal mode: estimate == truth, so both success measures agree. Realistic mode:
+    success by the estimate can only add flights that held the hover where they believed
+    the target was, and the true end error is reported for them."""
+    worlds = scenario_worlds(SCENARIOS[0], 12)  # open field
+    ideal = fly(worlds, reference_pilot(), RunOptions())
+    assert all(r["success"] == r["true_success"] for r in ideal)
+    real = fly(worlds, reference_pilot(), RunOptions(realistic=True))
+    s = summarize(real)
+    assert s["success_rate"] >= s["true_success_rate"]
+    assert all(r["true_final_error"] is not None for r in real if r["success"])

@@ -1,6 +1,14 @@
 """Fly pilots (learned policy or the classical reference) on given worlds and record results.
 
 Shared by the evaluation script and the Streamlit app.
+
+How success is judged: a flight succeeds when the drone has passed every waypoint and held
+a hover at the last one (within 0.3 m, slower than 0.5 m/s, for 2 s) according to its own
+onboard position estimate. In ideal mode the estimate is exact, so this is the true
+position. In realistic mode the estimate drifts over a flight, as visual-inertial odometry
+does, and no policy can see that drift from onboard sensors. The true end error is
+therefore reported separately (`hover_rms`, `true_final_error`), as is success judged on the
+true position (`true_success`).
 """
 
 from __future__ import annotations
@@ -84,8 +92,11 @@ def fly(worlds: list[World], pilot: Pilot, opt: RunOptions | None = None) -> lis
     ray_range = np.where(env.realism > 0.5, env.cfg.rays.real_max_range, env.cfg.rays.max_range)
     finished = np.zeros(n, bool)
     res = [
-        dict(success=False, collision=False, out_of_bounds=False, timeout=False) for _ in range(n)
+        dict(success=False, true_success=False, collision=False, out_of_bounds=False, timeout=False)
+        for _ in range(n)
     ]
+    est_hold = np.zeros(n)  # hover time at the final waypoint by the onboard estimate
+    true_err = np.full(n, np.nan)  # true distance to the final waypoint when the hold completes
     path = np.zeros(n)
     min_clear = np.full(n, np.inf)
     hover_err: list[list[float]] = [[] for _ in range(n)]
@@ -123,9 +134,23 @@ def fly(worlds: list[World], pilot: Pilot, opt: RunOptions | None = None) -> lis
         min_clear = np.where(live, np.minimum(min_clear, info["min_clearance"]), min_clear)
         smooth += np.sum((a - prev_a) ** 2, axis=1) * live
         prev_a = a
-        for i in np.flatnonzero(live & (env.hold > 0)):
-            final = env.world.waypoints[i, env.world.n_waypoints[i] - 1]
-            hover_err[i].append(float(np.linalg.norm(env.state.pos[i] - final)))
+        # success by the onboard estimate (equals the true position in ideal mode)
+        ar = np.arange(n)
+        final_wp = env.world.waypoints[ar, env.world.n_waypoints - 1]
+        at_final = env.wp_idx == env.world.n_waypoints - 1
+        est_d = np.linalg.norm(env.state.pos + env.est_bias - final_wp, axis=1)
+        speed = np.linalg.norm(env.state.vel, axis=1)
+        holding = at_final & (est_d < env.cfg.final_radius) & (speed < env.cfg.final_max_speed)
+        est_hold = np.where(live & holding, est_hold + env.cfg.policy_dt, 0.0)
+        for i in np.flatnonzero(live & holding):
+            hover_err[i].append(float(np.linalg.norm(env.state.pos[i] - final_wp[i])))
+        est_done = live & (est_hold >= env.cfg.hold_time) & ~done
+        for i in np.flatnonzero(est_done):  # finished by its own estimate (true pos may be off)
+            finished[i] = True
+            res[i]["success"] = True
+            res[i]["steps"] = int(env.t[i])
+            res[i]["waypoints_reached"] = int(env.world.n_waypoints[i])
+            true_err[i] = float(np.linalg.norm(env.state.pos[i] - final_wp[i]))
         if opt.record:
             for i in np.flatnonzero(live):
                 record(i, a[i], obs_a[i, -2 * n_rays : -n_rays], obs_a[i, -n_rays:])
@@ -133,6 +158,12 @@ def fly(worlds: list[World], pilot: Pilot, opt: RunOptions | None = None) -> lis
             finished[i] = True
             for k in ("success", "collision", "out_of_bounds", "timeout"):
                 res[i][k] = bool(info[k][i])
+            res[i]["true_success"] = bool(info["success"][i])
+            if info["success"][i]:
+                true_err[i] = float(np.linalg.norm(env.state.pos[i] - final_wp[i]))
+            # a timeout while holding by the estimate counts once the 2 s hold is complete
+            if info["timeout"][i] and est_hold[i] >= env.cfg.hold_time:
+                res[i]["success"], res[i]["timeout"] = True, False
             res[i]["steps"] = int(env.t[i])
             res[i]["waypoints_reached"] = int(info["waypoints_reached"][i])
         if finished.all():
@@ -153,6 +184,8 @@ def fly(worlds: list[World], pilot: Pilot, opt: RunOptions | None = None) -> lis
             hover_rms=float(np.sqrt(np.mean(np.square(hover_err[i])))) if hover_err[i] else None,
             smoothness=float(smooth[i] / max(steps, 1)),
             n_waypoints=int(w.n_waypoints),
+            true_final_error=None if np.isnan(true_err[i]) else float(true_err[i]),
+            estimate_drift=float(np.linalg.norm(env.est_bias[i])),
         )
         if opt.record:
             res[i]["frames"] = frames[i]
@@ -178,11 +211,14 @@ def summarize(results: list[dict]) -> dict:
     return {
         "episodes": len(results),
         "success_rate": len(ok) / n,
+        "true_success_rate": sum(r.get("true_success", r["success"]) for r in results) / n,
         "collision_rate": sum(r["collision"] for r in results) / n,
         "timeout_rate": sum(r["timeout"] for r in results) / n,
         "avg_speed": mean("avg_speed", ok),
         "route_efficiency": mean("route_efficiency", ok),
         "hover_rms": mean("hover_rms", ok),
+        "true_final_error": mean("true_final_error", ok),
+        "estimate_drift": mean("estimate_drift", results),
         "min_clearance": mean("min_clearance", ok),
         "smoothness": mean("smoothness", ok),
         "time": mean("time", ok),

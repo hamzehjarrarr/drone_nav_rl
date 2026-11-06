@@ -132,6 +132,7 @@ def run_flight(
             "min_clearance",
             "waypoints_reached",
             "n_waypoints",
+            "true_final_error",
         )
     }
     return payload, summary
@@ -197,9 +198,10 @@ with st.sidebar:
     push = st.checkbox("Push the drone mid-flight")
     realistic = st.checkbox(
         "Realistic sensing",
-        value=False,
-        help="Forward-only depth camera (85° × 58°, 3 m), drifting position estimate, "
-        "latency, battery sag and randomized dynamics.",
+        value=True,
+        help="On: what a real drone would have. Forward-only depth camera (85° × 58°, 3 m), "
+        "a drifting position estimate, latency, battery sag and randomized dynamics. "
+        "Off: ideal sensing, a 360° range scan out to 5 m and the exact position.",
     )
 
     st.markdown("#### 4 · Pilot")
@@ -253,6 +255,13 @@ m2.metric(
 )
 m3.metric("Average speed", f"{summary['avg_speed']:.1f} m/s")
 m4.metric("Min clearance", f"{max(summary['min_clearance'], 0.0):.2f} m")
+flown_realistic = st.session_state.last[6]  # the setting the shown flight used
+if summary["success"] and summary.get("true_final_error") is not None and flown_realistic:
+    st.caption(
+        f"Hover held at the target by the drone's own position estimate. Its estimate had "
+        f"drifted, so the true final position was {summary['true_final_error']:.2f} m from "
+        "the target, as with a real drone's visual-inertial odometry."
+    )
 
 frames = payload["frames"]
 t = np.asarray(frames["t"])
@@ -274,9 +283,12 @@ with st.expander("How it works"):
     st.markdown(
         "- **Policy:** a small neural network (2 × 256) trained with PPO and an asymmetric "
         "critic. It outputs collective thrust and body rates at 50 Hz.\n"
-        "- **Senses:** a 64-sector range scan (ideal) or a forward depth camera that tilts "
-        "with the drone (realistic), plus velocity, attitude and the next two waypoints. "
-        "No map.\n"
+        "- **Senses:** a forward depth camera that tilts with the drone (realistic, the "
+        "default) or a 64-sector range scan all around (ideal), plus velocity, attitude and "
+        "the next two waypoints. No map.\n"
+        "- **Success** means it held the final hover by its own position estimate. In "
+        "realistic mode that estimate drifts during a flight, as on a real drone, so the "
+        "true end position can be off by a few tens of centimetres.\n"
         "- **Simulator:** 6-DoF rigid body, motor lag, body and rotor drag, ground effect, "
         "wind and a rate controller at 250 Hz, using the drone profile the policy was "
         "trained for (default: the open-source Agilicious quadrotor).\n"

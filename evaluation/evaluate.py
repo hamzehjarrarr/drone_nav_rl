@@ -77,6 +77,12 @@ def main(argv: list[str] | None = None) -> dict:
         "",
         f"{args.episodes} episodes per scenario and mode, fixed test seeds.",
         "",
+        "**Success** = every waypoint passed and a 2 s hover held at the last one, judged by the",
+        "drone's onboard position estimate. In ideal mode that estimate is exact. In realistic",
+        "mode it drifts during a flight (like visual-inertial odometry), which no policy can see",
+        "from onboard sensors, so **Final error** gives the true distance from the target at",
+        "the end of the hover.",
+        "",
     ]
     for pname, by_mode in results.items():
         for mode, by_scn in by_mode.items():
@@ -84,14 +90,14 @@ def main(argv: list[str] | None = None) -> dict:
                 f"## {pname} · {mode}",
                 "",
                 "| Scenario | Success | Collision | Avg speed (m/s) | Route eff. | "
-                "Hover RMS (m) | Min clearance (m) |",
+                "Final error (m) | Min clearance (m) |",
                 "| --- | --- | --- | --- | --- | --- | --- |",
             ]
             for name, s in by_scn.items():
                 lines.append(
                     f"| {name} | {_fmt(s['success_rate'], True)} | "
                     f"{_fmt(s['collision_rate'], True)} | {_fmt(s['avg_speed'])} | "
-                    f"{_fmt(s['route_efficiency'])} | {_fmt(s['hover_rms'])} | "
+                    f"{_fmt(s['route_efficiency'])} | {_fmt(s['true_final_error'])} | "
                     f"{_fmt(s['min_clearance'])} |"
                 )
             lines.append("")
